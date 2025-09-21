@@ -51,7 +51,8 @@ pub struct Pss {
     pub digest: Box<dyn DynDigest + Send + Sync>,
 
     /// Salt length.
-    pub salt_len: usize,
+    /// Required for signing, optional for verifying.
+    pub salt_len: Option<usize>,
 }
 
 impl Pss {
@@ -66,7 +67,7 @@ impl Pss {
         Self {
             blinded: false,
             digest: Box::new(T::new()),
-            salt_len: len,
+            salt_len: Some(len),
         }
     }
 
@@ -84,7 +85,7 @@ impl Pss {
         Self {
             blinded: true,
             digest: Box::new(T::new()),
-            salt_len: len,
+            salt_len: Some(len),
         }
     }
 }
@@ -101,7 +102,7 @@ impl SignatureScheme for Pss {
             self.blinded,
             priv_key,
             hashed,
-            self.salt_len,
+            self.salt_len.expect("salt_len to be Some"),
             &mut *self.digest,
         )
     }
@@ -134,7 +135,7 @@ pub(crate) fn verify(
     sig: &BoxedUint,
     sig_len: usize,
     digest: &mut dyn DynDigest,
-    salt_len: usize,
+    salt_len: Option<usize>,
 ) -> Result<()> {
     if sig_len != pub_key.size() {
         return Err(Error::Verification);
@@ -149,7 +150,7 @@ pub(crate) fn verify_digest<D>(
     pub_key: &RsaPublicKey,
     hashed: &[u8],
     sig: &BoxedUint,
-    salt_len: usize,
+    salt_len: Option<usize>,
 ) -> Result<()>
 where
     D: Digest + FixedOutputReset,
@@ -261,6 +262,7 @@ mod test {
     use crate::pss::{BlindedSigningKey, Pss, Signature, SigningKey, VerifyingKey};
     use crate::{RsaPrivateKey, RsaPublicKey};
 
+    use crate::traits::PublicKeyParts;
     use hex_literal::hex;
     use pkcs1::DecodeRsaPrivateKey;
     use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
@@ -396,10 +398,13 @@ tAboUGBxTDq3ZroNism3DaMIbKPyYrAqhKov1h5V
         let verifying_key = VerifyingKey::new(pub_key);
 
         for (text, sig, expected) in &tests {
-            let mut digest = Sha1::new();
-            digest.update(text.as_bytes());
-            let result =
-                verifying_key.verify_digest(digest, &Signature::try_from(sig.as_slice()).unwrap());
+            let result = verifying_key.verify_digest(
+                |digest: &mut Sha1| {
+                    digest.update(text.as_bytes());
+                    Ok(())
+                },
+                &Signature::try_from(sig.as_slice()).unwrap(),
+            );
             match expected {
                 true => result.expect("failed to verify"),
                 false => {
@@ -493,14 +498,17 @@ tAboUGBxTDq3ZroNism3DaMIbKPyYrAqhKov1h5V
         let verifying_key = signing_key.verifying_key();
 
         for test in &tests {
-            let mut digest = Sha1::new();
-            digest.update(test.as_bytes());
-            let sig = signing_key.sign_digest_with_rng(&mut rng, digest);
+            let sig = signing_key
+                .sign_digest_with_rng(&mut rng, |digest: &mut Sha1| digest.update(test.as_bytes()));
 
-            let mut digest = Sha1::new();
-            digest.update(test.as_bytes());
             verifying_key
-                .verify_digest(digest, &sig)
+                .verify_digest(
+                    |digest: &mut Sha1| {
+                        digest.update(test.as_bytes());
+                        Ok(())
+                    },
+                    &sig,
+                )
                 .expect("failed to verify");
         }
     }
@@ -515,14 +523,17 @@ tAboUGBxTDq3ZroNism3DaMIbKPyYrAqhKov1h5V
         let verifying_key = signing_key.verifying_key();
 
         for test in &tests {
-            let mut digest = Sha1::new();
-            digest.update(test.as_bytes());
-            let sig = signing_key.sign_digest_with_rng(&mut rng, digest);
+            let sig = signing_key
+                .sign_digest_with_rng(&mut rng, |digest: &mut Sha1| digest.update(test.as_bytes()));
 
-            let mut digest = Sha1::new();
-            digest.update(test.as_bytes());
             verifying_key
-                .verify_digest(digest, &sig)
+                .verify_digest(
+                    |digest: &mut Sha1| {
+                        digest.update(test.as_bytes());
+                        Ok(())
+                    },
+                    &sig,
+                )
                 .expect("failed to verify");
         }
     }
@@ -620,6 +631,41 @@ tAboUGBxTDq3ZroNism3DaMIbKPyYrAqhKov1h5V
                 .to_public_key()
                 .verify(Pss::new::<Sha1>(), &digest, &sig)
                 .expect("failed to verify");
+        }
+    }
+
+    #[test]
+    // Tests the case where the salt length used for signing differs from the default length
+    // while the verifier uses auto-detection.
+    fn test_sign_and_verify_pss_differing_salt_len() {
+        let priv_key = get_private_key();
+
+        let tests = ["test\n"];
+        let mut rng = ChaCha8Rng::from_seed([42; 32]);
+
+        // signing keys using different salt lengths
+        let signing_keys = [
+            // default salt length
+            SigningKey::<Sha1>::new(priv_key.clone()),
+            // maximum salt length
+            SigningKey::<Sha1>::new_with_salt_len(
+                priv_key.clone(),
+                priv_key.size() - Sha1::output_size() - 2,
+            ),
+            // unsalted
+            SigningKey::<Sha1>::new_with_salt_len(priv_key.clone(), 0),
+        ];
+
+        // verifying key uses default salt length strategy
+        let verifying_key = VerifyingKey::<Sha1>::new_with_auto_salt_len(priv_key.to_public_key());
+
+        for test in tests {
+            for signing_key in &signing_keys {
+                let sig = signing_key.sign_with_rng(&mut rng, test.as_bytes());
+                verifying_key
+                    .verify(test.as_bytes(), &sig)
+                    .expect("verification to succeed");
+            }
         }
     }
 }

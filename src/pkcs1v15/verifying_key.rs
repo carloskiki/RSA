@@ -3,7 +3,7 @@ use crate::RsaPublicKey;
 use alloc::vec::Vec;
 use const_oid::AssociatedOid;
 use core::marker::PhantomData;
-use digest::Digest;
+use digest::{Digest, FixedOutput, HashMarker, Update};
 use signature::{hazmat::PrehashVerifier, DigestVerifier, Verifier};
 
 #[cfg(feature = "encoding")]
@@ -71,13 +71,19 @@ where
 
 impl<D> DigestVerifier<D, Signature> for VerifyingKey<D>
 where
-    D: Digest,
+    D: Default + FixedOutput + HashMarker + Update,
 {
-    fn verify_digest(&self, digest: D, signature: &Signature) -> signature::Result<()> {
+    fn verify_digest<F: Fn(&mut D) -> signature::Result<()>>(
+        &self,
+        f: F,
+        signature: &Signature,
+    ) -> signature::Result<()> {
+        let mut digest = D::default();
+        f(&mut digest)?;
         verify(
             &self.inner,
             &self.prefix,
-            &digest.finalize(),
+            &digest.finalize_fixed(),
             &signature.inner,
         )
         .map_err(|e| e.into())
@@ -241,15 +247,16 @@ where
 #[cfg(test)]
 mod tests {
     #[test]
-    #[cfg(feature = "serde")]
+    #[cfg(all(feature = "hazmat", feature = "serde"))]
     fn test_serde() {
         use super::*;
+        use crate::RsaPrivateKey;
         use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
         use serde_test::{assert_tokens, Configure, Token};
         use sha2::Sha256;
 
         let mut rng = ChaCha8Rng::from_seed([42; 32]);
-        let priv_key = crate::RsaPrivateKey::new(&mut rng, 64).expect("failed to generate key");
+        let priv_key = RsaPrivateKey::new_unchecked(&mut rng, 64).expect("failed to generate key");
         let pub_key = priv_key.to_public_key();
         let verifying_key = VerifyingKey::<Sha256>::new(pub_key);
 

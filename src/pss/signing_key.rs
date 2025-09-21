@@ -1,13 +1,14 @@
 use super::{sign_digest, Signature, VerifyingKey};
 use crate::{Result, RsaPrivateKey};
 use core::marker::PhantomData;
-use digest::{Digest, FixedOutputReset};
+use digest::{Digest, FixedOutputReset, Update};
 use rand_core::{CryptoRng, TryCryptoRng};
 use signature::{
     hazmat::RandomizedPrehashSigner, Keypair, RandomizedDigestSigner, RandomizedMultipartSigner,
     RandomizedSigner,
 };
 use zeroize::ZeroizeOnDrop;
+
 #[cfg(feature = "serde")]
 use {
     pkcs8::DecodePrivateKey,
@@ -25,6 +26,7 @@ use {
         AssociatedAlgorithmIdentifier, DynSignatureAlgorithmIdentifier,
     },
 };
+
 #[cfg(feature = "os_rng")]
 use {
     rand_core::OsRng,
@@ -95,13 +97,18 @@ where
 
 impl<D> RandomizedDigestSigner<D, Signature> for SigningKey<D>
 where
-    D: Digest + FixedOutputReset,
+    D: Digest + FixedOutputReset + Update,
 {
-    fn try_sign_digest_with_rng<R: TryCryptoRng + ?Sized>(
+    fn try_sign_digest_with_rng<
+        R: TryCryptoRng + ?Sized,
+        F: Fn(&mut D) -> signature::Result<()>,
+    >(
         &self,
         rng: &mut R,
-        digest: D,
+        f: F,
     ) -> signature::Result<Signature> {
+        let mut digest = D::new();
+        f(&mut digest)?;
         sign_digest::<_, D>(rng, false, &self.inner, &digest.finalize(), self.salt_len)?
             .as_slice()
             .try_into()
@@ -110,36 +117,39 @@ where
 
 impl<D> RandomizedSigner<Signature> for SigningKey<D>
 where
-    D: Digest + FixedOutputReset,
+    D: Digest + FixedOutputReset + Update,
 {
     fn try_sign_with_rng<R: TryCryptoRng + ?Sized>(
         &self,
         rng: &mut R,
         msg: &[u8],
     ) -> signature::Result<Signature> {
-        self.try_sign_digest_with_rng(rng, D::new_with_prefix(msg))
+        self.try_sign_digest_with_rng(rng, |digest: &mut D| {
+            Update::update(digest, msg);
+            Ok(())
+        })
     }
 }
 
 impl<D> RandomizedMultipartSigner<Signature> for SigningKey<D>
 where
-    D: Digest + FixedOutputReset,
+    D: Digest + FixedOutputReset + Update,
 {
     fn try_multipart_sign_with_rng<R: TryCryptoRng + ?Sized>(
         &self,
         rng: &mut R,
         msg: &[&[u8]],
     ) -> signature::Result<Signature> {
-        let mut digest = D::new();
-        msg.iter()
-            .for_each(|slice| <D as Digest>::update(&mut digest, slice));
-        self.try_sign_digest_with_rng(rng, digest)
+        self.try_sign_digest_with_rng(rng, |digest: &mut D| {
+            msg.iter().for_each(|slice| Update::update(digest, slice));
+            Ok(())
+        })
     }
 }
 
 impl<D> RandomizedPrehashSigner<Signature> for SigningKey<D>
 where
-    D: Digest + FixedOutputReset,
+    D: Digest + FixedOutputReset + Update,
 {
     fn sign_prehash_with_rng<R: TryCryptoRng + ?Sized>(
         &self,
@@ -251,7 +261,7 @@ where
     fn verifying_key(&self) -> Self::VerifyingKey {
         VerifyingKey {
             inner: self.inner.to_public_key(),
-            salt_len: self.salt_len,
+            salt_len: Some(self.salt_len),
             phantom: Default::default(),
         }
     }
@@ -312,15 +322,16 @@ where
 #[cfg(test)]
 mod tests {
     #[test]
-    #[cfg(feature = "serde")]
+    #[cfg(all(feature = "hazmat", feature = "serde"))]
     fn test_serde() {
         use super::*;
+        use crate::RsaPrivateKey;
         use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
         use serde_test::{assert_tokens, Configure, Token};
         use sha2::Sha256;
 
         let mut rng = ChaCha8Rng::from_seed([42; 32]);
-        let priv_key = crate::RsaPrivateKey::new(&mut rng, 64).expect("failed to generate key");
+        let priv_key = RsaPrivateKey::new_unchecked(&mut rng, 64).expect("failed to generate key");
         let signing_key = SigningKey::<Sha256>::new(priv_key);
 
         let tokens = [Token::Str(concat!(

@@ -1,7 +1,7 @@
 use super::{verify_digest, Signature};
 use crate::RsaPublicKey;
 use core::marker::PhantomData;
-use digest::{Digest, FixedOutputReset};
+use digest::{Digest, FixedOutputReset, Update};
 use signature::{hazmat::PrehashVerifier, DigestVerifier, Verifier};
 
 #[cfg(feature = "encoding")]
@@ -27,7 +27,7 @@ where
     D: Digest,
 {
     pub(super) inner: RsaPublicKey,
-    pub(super) salt_len: usize,
+    pub(super) salt_len: Option<usize>,
     pub(super) phantom: PhantomData<D>,
 }
 
@@ -45,13 +45,23 @@ where
     pub fn new_with_salt_len(key: RsaPublicKey, salt_len: usize) -> Self {
         Self {
             inner: key,
-            salt_len,
+            salt_len: Some(salt_len),
+            phantom: Default::default(),
+        }
+    }
+
+    /// Create a new RSASSA-PSS verifying key.
+    /// Attempts to automatically detect the salt length.
+    pub fn new_with_auto_salt_len(key: RsaPublicKey) -> Self {
+        Self {
+            inner: key,
+            salt_len: None,
             phantom: Default::default(),
         }
     }
 
     /// Return specified salt length for this key
-    pub fn salt_len(&self) -> usize {
+    pub fn salt_len(&self) -> Option<usize> {
         self.salt_len
     }
 }
@@ -62,9 +72,15 @@ where
 
 impl<D> DigestVerifier<D, Signature> for VerifyingKey<D>
 where
-    D: Digest + FixedOutputReset,
+    D: Digest + FixedOutputReset + Update,
 {
-    fn verify_digest(&self, digest: D, signature: &Signature) -> signature::Result<()> {
+    fn verify_digest<F: Fn(&mut D) -> signature::Result<()>>(
+        &self,
+        f: F,
+        signature: &Signature,
+    ) -> signature::Result<()> {
+        let mut digest = D::new();
+        f(&mut digest)?;
         verify_digest::<D>(
             &self.inner,
             &digest.finalize(),
@@ -226,15 +242,16 @@ where
 #[cfg(test)]
 mod tests {
     #[test]
-    #[cfg(feature = "serde")]
+    #[cfg(all(feature = "hazmat", feature = "serde"))]
     fn test_serde() {
         use super::*;
+        use crate::RsaPrivateKey;
         use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
         use serde_test::{assert_tokens, Configure, Token};
         use sha2::Sha256;
 
         let mut rng = ChaCha8Rng::from_seed([42; 32]);
-        let priv_key = crate::RsaPrivateKey::new(&mut rng, 64).expect("failed to generate key");
+        let priv_key = RsaPrivateKey::new_unchecked(&mut rng, 64).expect("failed to generate key");
         let pub_key = priv_key.to_public_key();
         let verifying_key = VerifyingKey::<Sha256>::new(pub_key);
 

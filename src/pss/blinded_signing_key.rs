@@ -1,7 +1,7 @@
 use super::{sign_digest, Signature, VerifyingKey};
 use crate::{Result, RsaPrivateKey};
 use core::marker::PhantomData;
-use digest::{Digest, FixedOutputReset};
+use digest::{Digest, FixedOutputReset, HashMarker, Update};
 use rand_core::{CryptoRng, TryCryptoRng};
 use signature::{
     hazmat::RandomizedPrehashSigner, Keypair, RandomizedDigestSigner, RandomizedMultipartSigner,
@@ -122,13 +122,18 @@ where
 
 impl<D> RandomizedDigestSigner<D, Signature> for BlindedSigningKey<D>
 where
-    D: Digest + FixedOutputReset,
+    D: Default + FixedOutputReset + HashMarker + Update,
 {
-    fn try_sign_digest_with_rng<R: TryCryptoRng + ?Sized>(
+    fn try_sign_digest_with_rng<
+        R: TryCryptoRng + ?Sized,
+        F: Fn(&mut D) -> signature::Result<()>,
+    >(
         &self,
         rng: &mut R,
-        digest: D,
+        f: F,
     ) -> signature::Result<Signature> {
+        let mut digest = D::default();
+        f(&mut digest)?;
         sign_digest::<_, D>(rng, true, &self.inner, &digest.finalize(), self.salt_len)?
             .as_slice()
             .try_into()
@@ -219,7 +224,7 @@ where
     fn verifying_key(&self) -> Self::VerifyingKey {
         VerifyingKey {
             inner: self.inner.to_public_key(),
-            salt_len: self.salt_len,
+            salt_len: Some(self.salt_len),
             phantom: Default::default(),
         }
     }
@@ -279,7 +284,7 @@ where
 #[cfg(test)]
 mod tests {
     #[test]
-    #[cfg(feature = "serde")]
+    #[cfg(all(feature = "hazmat", feature = "serde"))]
     fn test_serde() {
         use super::*;
         use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
@@ -288,7 +293,7 @@ mod tests {
 
         let mut rng = ChaCha8Rng::from_seed([42; 32]);
         let signing_key = BlindedSigningKey::<Sha256>::new(
-            RsaPrivateKey::new(&mut rng, 64).expect("failed to generate key"),
+            RsaPrivateKey::new_unchecked(&mut rng, 64).expect("failed to generate key"),
         );
 
         let tokens = [Token::Str(concat!(
