@@ -23,6 +23,7 @@ subtle = { version = "2.6.1", default-features = false }
 zeroize = { version = "1.5", features = ["alloc"] }
 
 # optional dependencies
+verifiable-random-function = { version = "0.1", optional = true }
 pkcs1 = { version = "0.8.0-rc.3", optional = true, default-features = false, features = ["alloc", "pem"] }
 pkcs8 = { version = "0.11.0-rc.6", optional = true, default-features = false, features = ["alloc", "pem"] }
 serdect = { version = "0.3.0", optional = true }
@@ -58,6 +59,10 @@ os_rng = ["rand_core/os_rng", "crypto-bigint/rand_core"]
 serde = ["encoding", "dep:serde", "dep:serdect", "crypto-bigint/serde"]
 pkcs5 = ["pkcs8/encryption"]
 std = ["pkcs1?/std", "pkcs8?/std", "rand_core/std", "crypto-bigint/rand"]
+verifiable-random-function = ["dep:verifiable-random-function", "sha2"]
+
+[patch.crates-io]
+verifiable-random-function = { git = "https://github.com/carloskiki/traits.git" }
 
 [package.metadata.docs.rs]
 features = ["std", "serde", "hazmat", "sha2"]

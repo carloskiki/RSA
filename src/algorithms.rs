@@ -8,3 +8,4 @@ pub(crate) mod pad;
 pub(crate) mod pkcs1v15;
 pub(crate) mod pss;
 pub(crate) mod rsa;
+pub(crate) mod vrf;

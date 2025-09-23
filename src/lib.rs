@@ -237,6 +237,8 @@ pub mod traits;
 mod dummy_rng;
 mod encoding;
 mod key;
+#[cfg(feature = "verifiable-random-function")]
+mod vrf;
 
 #[cfg(feature = "encoding")]
 pub use pkcs1;
