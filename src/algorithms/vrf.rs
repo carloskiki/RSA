@@ -10,6 +10,8 @@ use crate::{
     RsaPrivateKey, RsaPublicKey,
 };
 
+/// RSAFDHVRF_prove(K, alpha_string[, MGF_salt]) from [RFC 9381 Section
+/// 4.1](https://www.rfc-editor.org/rfc/rfc9381.html#section-4.1)
 pub fn prove(
     digest: &mut impl DynDigest,
     k: &RsaPrivateKey,
@@ -55,6 +57,8 @@ pub fn prove(
     rsa_decrypt::<NoRng>(None, k, &m).expect("m < n since em is `k.size() - 1` bytes long")
 }
 
+/// RSAFDHVRF_proof_to_hash(pi_string) from [RFC 9381 Section
+/// 4.2](https://www.rfc-editor.org/rfc/rfc9381.html#section-4.2)
 pub fn proof_to_hash<D>(suite_string: &[u8], pi_string: &[u8]) -> Output<D>
 where
     D: Digest,
@@ -67,6 +71,8 @@ where
     digest.finalize()
 }
 
+/// RSAFDHVRF_verify(K, alpha_string, pi_string[, MGF_salt]) from [RFC 9381
+/// Section 4.3](https://www.rfc-editor.org/rfc/rfc9381.html#section-4.3)
 pub fn verify(
     digest: &mut impl DynDigest,
     k: &RsaPublicKey,
